@@ -1,0 +1,10 @@
+<resources>
+    <string name="app_name">BASElication</string>
+    <string name="target_sentence">TARGET SENTENCE</string>
+    <string name="targetsentence">target sentence</string>
+    <string name="text_extracetd">TEXT EXTRACTED</string>
+    <string name="matchlimit">MATCH LIMIT</string>
+    <string name="matchcount">MATCH COUNT</string>
+    <string name="_00">00</string>
+    <string name="start">START</string>
+</resources>
