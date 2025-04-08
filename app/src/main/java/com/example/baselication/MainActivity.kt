@@ -9,6 +9,7 @@ import android.media.AudioManager
 import android.media.ToneGenerator
 import android.os.Bundle
 import android.os.Handler
+import android.os.Looper
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
@@ -38,21 +39,20 @@ class MainActivity : AppCompatActivity() {
     // App logic variables
     private var matchCount = 0
     private var matchLimit = 0
-    private var targetSentence = "hello"
+    private var targetSentence = ""
+    private var currentWordIndex = 0
 
     // Permission request code
     private val recordAudioPermissionRequestCode = 1
     private var fullRecognizedText = ""
     private var lastPartialText = ""
-    private val recognizedWords = mutableSetOf<String>()
-
 
 
     // Mantra list
     private val mantras = listOf(
         "Om Namah Shivaya",
         "Hare Krishna Hare Rama",
-        "Gayatri Mantra",
+        "Gayatri Mantra", "hello",
         "Om Shanti Shanti Shanti",
         "Sarve Bhavantu Sukhinah",
         "Asatoma Sadgamaya"
@@ -108,8 +108,7 @@ class MainActivity : AppCompatActivity() {
                         this,
                         "Please enter a target sentence.",
                         Toast.LENGTH_SHORT
-                    )
-                        .show()
+                    ).show()
                     return@setOnClickListener
                 }
 
@@ -134,16 +133,27 @@ class MainActivity : AppCompatActivity() {
                     return@setOnClickListener
                 }
 
-                matchCount = 0
-                matchCountView.text = matchCount.toString()
-                startListeningWithDelay()
-                recognizedTextView.text = ""
-                fullRecognizedText = ""
-                lastPartialText = ""
-                recognizedWords.clear()
+                resetState()
+                isListening = true                     //  This line is critical
+                btnStartStop.text = "STOP"             //  Update button UI
+                startListeningWithDelay()              //  Actually start speech recognition
             }
         }
+
     }
+
+    @SuppressLint("SetTextI18n")
+    private fun resetState() {
+        matchCount = 0
+        currentWordIndex = 0
+        matchCountView.text = "0"
+        recognizedTextView.text = ""
+        fullRecognizedText = ""
+        lastPartialText = ""
+    }
+
+
+
     // Permission check
     private fun checkPermissionAndStart() {
         if (ContextCompat.checkSelfPermission(
@@ -190,140 +200,134 @@ class MainActivity : AppCompatActivity() {
         if (speechRecognizer == null && SpeechRecognizer.isRecognitionAvailable(this)) {
             speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this)
             speechRecognizer?.setRecognitionListener(object : RecognitionListener {
-                override fun onReadyForSpeech(params: Bundle?) {}
+
+                // Called when the recognizer is ready to start listening
+                override fun onReadyForSpeech(params: Bundle?) {
+                    // Optional: Log or update UI
+                }
+
                 override fun onBeginningOfSpeech() {
-                    fullRecognizedText = ""
                     lastPartialText = ""
                 }
-                override fun onRmsChanged(rmsdB: Float) {}
+
+                override fun onRmsChanged(rmsdB: Float) {
+                    // Optional: Show mic level
+                }
+
                 override fun onBufferReceived(buffer: ByteArray?) {}
                 override fun onEndOfSpeech() {
-                    Log.d("onEndOfSpeech","called")
+                    // Optional: Notify end of speech
                 }
-                // Handle errors with automatic retry
+
+                // Handle recognition errors
                 override fun onError(error: Int) {
-                    Log.d("SpeechError", "Error Code: $error")
-
                     when (error) {
-                        SpeechRecognizer.ERROR_NO_MATCH, SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> {
-                            if (isListening) startListening() // Restart without delay
+                        SpeechRecognizer.ERROR_NO_MATCH -> {
+                            if (isListening) {
+                                startListeningWithDelay()
+                            }
                         }
-                        else -> stopListening() // Stop for other errors
+
+                        SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> {
+                            if (isListening) {
+                                startListeningWithDelay()
+                            }
+                        }
+
+                        SpeechRecognizer.ERROR_CLIENT -> {
+                            if (isListening) {
+                                stopAndDestroyRecognizer()
+                                createSpeechRecognizer()
+                                startListeningWithDelay()
+                            }
+                        }
+
+                        else -> {
+                            stopAndDestroyRecognizer()
+                            Toast.makeText(
+                                applicationContext,
+                                "Recognition Error: $error",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
                     }
                 }
 
+                // Final recognition result
                 override fun onResults(results: Bundle?) {
-                    val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                    val matches =
+                        results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                     matches?.let {
-                        fullRecognizedText += matches.joinToString(" ") + " " // Keep track of full sentence
+                        val combined = matches.joinToString(" ")
+                        fullRecognizedText += "$combined "
                         recognizedTextView.text = fullRecognizedText.trim()
-
-                        // process and count words
-                        processAndCountWords(matches)
-
-
-                        if (matchCount >= matchLimit) {
-                            triggerAlarm()
-                            stopListening()
-                            return
+                        processAndCountWords(ArrayList(listOf(combined)))
+                        if (isListening && matchCount < matchLimit) {
+                            startListeningWithDelay()
                         }
-
                     }
-                    if (isListening) startListening()
                 }
+
+                // Partial results (live transcription)
                 override fun onPartialResults(partialResults: Bundle?) {
-                    val partialMatches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                    partialMatches?.let { matches ->
-                        val newPartialText = matches.joinToString(" ").trim()
-                        recognizedTextView.text = newPartialText
-                        // process and count words
-                        processAndCountWords(matches)
-                        if (matchCount >= matchLimit) {
-                            triggerAlarm()
-                            stopListening()
-                            return
-                        }
-
-
-                        // Update recognized text
-                        recognizedTextView.text = newPartialText
+                    val partialMatches =
+                        partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                    partialMatches?.let {
+                        lastPartialText = it.joinToString(" ").trim()
+                        recognizedTextView.text = lastPartialText
                     }
                 }
-
 
                 override fun onEvent(eventType: Int, params: Bundle?) {}
             })
-
         }
     }
-    // process and count words
+
+
     private fun processAndCountWords(matches: ArrayList<String>) {
-        val targetWords = targetSentence.lowercase(Locale.getDefault()).split("\\s+".toRegex())
-        val targetWordCount = targetWords.size
-        val newWordsInSentence = mutableSetOf<String>() // Temporary set for each sentence
-        for (match in matches) {
-            val words = match.split("\\s+".toRegex()).filter { it.isNotEmpty() }
-            for (word in words) {
-                val lowerCaseWord = word.lowercase(Locale.getDefault())
-                if (!recognizedWords.contains(lowerCaseWord)) {
-                    newWordsInSentence.add(lowerCaseWord)
-                }
-            }
-        }
+        if (matches.isEmpty()) return
 
-        // Calculate similarity and decide whether to count
-        val currentSentence = matches.joinToString(" ").lowercase(Locale.getDefault()).split("\\s+".toRegex())
-        val similarity = calculateSimilarity(targetWords, currentSentence)
+        val recognizedWords = matches.joinToString(" ")
+            .lowercase(Locale.ROOT)
+            .split("\\s+".toRegex())
 
-        if (currentSentence.size >= targetWordCount * 0.75) { // Check if at least 75% of words are present.
-            if(similarity >= targetWordCount*0.6){ // Check if at least 60% are similar
-                matchCount++ // Count the match
+        val targetWords = targetSentence
+            .lowercase(Locale.ROOT)
+            .split("\\s+".toRegex())
+
+        val targetLength = targetWords.size
+
+        if (recognizedWords.size < targetLength) return
+
+        // Slide through the recognized words with a window the size of the target
+        for (i in 0..recognizedWords.size - targetLength) {
+            val window = recognizedWords.subList(i, i + targetLength)
+            if (window == targetWords) {
+                matchCount++
                 matchCountView.text = matchCount.toString()
-                recognizedWords.addAll(newWordsInSentence) // Add new words to recognizedWords for the entire session
-            }
-        }
-    }
-    private fun calculateSimilarity(target: List<String>, current: List<String>): Int {
-        var similarityCount = 0
-        val longerList = if (target.size > current.size) target else current
-        val shorterList = if (target.size > current.size) current else target
-        for (word1 in longerList) {
-            for (word2 in shorterList) {
-                if (levenshteinDistance(word1, word2) <= 1) {
-                    similarityCount++
-                    break
+
+                if (matchCount >= matchLimit) {
+                    triggerAlarm()
+                    stopAndDestroyRecognizer()
+                    return
                 }
             }
         }
-        return similarityCount
     }
-    // Calculate Levenshtein distance between two strings
-    private fun levenshteinDistance(s1: String, s2: String): Int {
-        val dp = Array(s1.length + 1) { IntArray(s2.length + 1) }
-        for (i in 0..s1.length) {
-            dp[i][0] = i
-        }
-        for (j in 0..s2.length) {
-            dp[0][j] = j
-        }
-        for (i in 1..s1.length) {
-            for (j in 1..s2.length) {
-                val cost = if (s1[i - 1] == s2[j - 1]) 0 else 1
-                dp[i][j] = minOf(
-                    dp[i - 1][j] + 1,
-                    dp[i][j - 1] + 1,
-                    dp[i - 1][j - 1] + cost
-                )
-            }
-        }
-        return dp[s1.length][s2.length]
-    }
+
+
 
     // Start Listening (with Delay for Continuous Mode)
     private fun startListeningWithDelay() {
-        @Suppress("DEPRECATION")
-        Handler().postDelayed({ startListening() }, 1000)  // Adds 1-second delay for stability
+        Handler(Looper.getMainLooper()).postDelayed({
+            if (speechRecognizer == null) {
+                createSpeechRecognizer()
+            }
+            startListening()
+        }, 500)
     }
+
+
 
     // Start Listening
     @SuppressLint("SetTextI18n")
@@ -332,38 +336,71 @@ class MainActivity : AppCompatActivity() {
             createSpeechRecognizer()
         }
 
-        isListening = true
-        btnStartStop.text = "STOP"
-
+        if (!isListening) {
+            return
+        }
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(
+                RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
+            )
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
         }
 
         speechRecognizer?.startListening(intent)
+
     }
 
     // Stop Listening
     @SuppressLint("SetTextI18n")
+
+
     private fun stopListening() {
         isListening = false
         btnStartStop.text = "START"
         speechRecognizer?.stopListening()
         speechRecognizer?.cancel()
+
+    }
+
+    private fun stopAndDestroyRecognizer() {
+        stopListening()
         speechRecognizer?.destroy()
         speechRecognizer = null
     }
 
+    @SuppressLint("SetTextI18n")
+    private fun resetStateAfterLimit() {
+        currentWordIndex = 0
+        matchCount = 0
+        matchCountView.text = "0"
+        recognizedTextView.text = ""
+        fullRecognizedText = ""
+    }
+
+
+
+
     // Trigger alarm
     private fun triggerAlarm() {
-        val toneGenerator=ToneGenerator(AudioManager.STREAM_MUSIC,100)
-        toneGenerator.startTone(ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD,200)
-        Handler().postDelayed({toneGenerator.release()},300)
+        stopListening()
+        val toneGenerator = ToneGenerator(AudioManager.STREAM_MUSIC, 100)
+        toneGenerator.startTone(ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 200)
+
+        Handler(Looper.getMainLooper()).postDelayed({ toneGenerator.release() }, 300)
+
         AlertDialog.Builder(this)
             .setTitle("Limit Reached")
             .setMessage("The match limit has been reached.")
-            .setPositiveButton("OK") { _, _ -> }
+            .setPositiveButton("OK") { _, _ ->
+                resetStateAfterLimit()
+
+                // Re-enable listening
+                isListening = true
+                btnStartStop.text = "STOP"
+                startListeningWithDelay()
+            }
             .show()
     }
 }
